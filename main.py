@@ -36,10 +36,6 @@ def guardar_foto(request: FotoRequest):
 def verificar_foto(qr_id: int = Query(...), session_id: str = Query(...)):
     try:
         key = (qr_id, session_id)
-        imagen = foto_storage.get(key)
-        if imagen:
-            return {"imagen": imagen}
-        else:
-            return {"imagen": None}
+        return {"imagen": foto_storage.get(key)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al verificar imagen: {str(e)}")
