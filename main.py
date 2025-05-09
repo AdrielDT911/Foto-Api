@@ -30,7 +30,7 @@ class ImageRequest(BaseModel):
 def generar_qr(request: QRRequest):
     try:
         qr_id = random.randint(1, 999999)
-        qr_data = f"https://adrieldt911.github.io/ScanWeb/?qr_id={qr_id}&session_id={request.session_id}"
+        qr_data = f"https://adrieldt911.github.io/FotoWeb/?qr_id={qr_id}&session_id={request.session_id}"
 
         qr = qrcode.make(qr_data)
         buffer = BytesIO()
