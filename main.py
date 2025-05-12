@@ -1,13 +1,17 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import qrcode
 from io import BytesIO
 import base64
 import random
+import os
 
 app = FastAPI()
-foto_storage = {}  # Estructura: {(qr_id, session_id): image_base64}
+storage = {}  # {(qr_id, session_id): filename}
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,22 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 📦 MODELOS
 class QRRequest(BaseModel):
     session_id: str
 
-class FotoRequest(BaseModel):
-    qr_id: int
-    session_id: str
-    image_base64: str  # imagen en base64
-
-# 📌 GENERADOR DE QR
 @app.post("/qr/generador")
 def generar_qr(request: QRRequest):
     try:
         qr_id = random.randint(100000, 999999)
         qr_data = f"https://adrieldt911.github.io/FotoWeb/?qr_id={qr_id}&session_id={request.session_id}"
-
         qr = qrcode.make(qr_data)
         buffer = BytesIO()
         qr.save(buffer, format="PNG")
@@ -44,23 +40,36 @@ def generar_qr(request: QRRequest):
             "qr_id": qr_id
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando QR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# 📌 GUARDAR FOTO EN BASE64
-@app.post("/foto/guardar")
-def guardar_foto(request: FotoRequest):
+@app.post("/qr/guardar-foto")
+def guardar_foto(
+    qr_id: int = Form(...),
+    session_id: str = Form(...),
+    imagen: UploadFile = File(...)
+):
     try:
-        key = (request.qr_id, request.session_id)
-        foto_storage[key] = request.image_base64
-        return {"status": "ok", "message": "Foto recibida y almacenada"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error guardando foto: {str(e)}")
+        filename = f"{qr_id}_{session_id}.jpg"
+        filepath = os.path.join(UPLOAD_DIR, filename)
+        with open(filepath, "wb") as f:
+            f.write(imagen.file.read())
 
-# 📌 VERIFICAR FOTO POR POLLING
-@app.get("/foto/verificar")
-def verificar_foto(qr_id: int = Query(...), session_id: str = Query(...)):
-    try:
         key = (qr_id, session_id)
-        return {"image_base64": foto_storage.get(key)}
+        storage[key] = filename
+        return {"status": "ok", "filename": filename}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al verificar foto: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/qr/verificar-foto")
+def verificar_foto(qr_id: int = Query(...), session_id: str = Query(...)):
+    key = (qr_id, session_id)
+    if key in storage:
+        return {"imagen_url": f"https://foto-api-production.up.railway.app/qr/imagen/{storage[key]}"}
+    return {"imagen_url": None}
+
+@app.get("/qr/imagen/{filename}")
+def get_image(filename: str):
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    return FileResponse(filepath, media_type="image/jpeg")
