@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, File, UploadFile
+from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import qrcode
@@ -9,7 +9,9 @@ from PIL import Image
 import io
 
 app = FastAPI()
-cdc_storage = {}  # Estructura: {(qr_id, session_id): image_data}
+
+# Almacén de imágenes: {(qr_id, session_id): base64_image_string}
+image_storage = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,12 +21,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- MODELOS DE DATOS ---
+
 class QRRequest(BaseModel):
     session_id: str
 
-class ImageRequest(BaseModel):
-    qr_id: int
-    session_id: str
+# --- ENDPOINT PARA GENERAR QR ---
 
 @app.post("/qr/generador")
 def generar_qr(request: QRRequest):
@@ -45,32 +47,40 @@ def generar_qr(request: QRRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando QR: {str(e)}")
 
+# --- ENDPOINT PARA GUARDAR IMAGEN ---
+
 @app.post("/qr/guardar-imagen")
-def guardar_imagen(request: ImageRequest, file: UploadFile = File(...)):
+async def guardar_imagen(
+    qr_id: int = Form(...),
+    session_id: str = Form(...),
+    file: UploadFile = File(...)
+):
     try:
-        # Guardar la imagen recibida
-        image = Image.open(io.BytesIO(file.file.read()))
-        image_data = image.tobytes()  # Este es un ejemplo. Se puede hacer el procesamiento que desees aquí.
+        contents = await file.read()
+        # Convertir a imagen para verificar que sea válida
+        image = Image.open(io.BytesIO(contents))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        base64_image = base64.b64encode(buffer.getvalue()).decode()
 
-        key = (request.qr_id, request.session_id)
-        cdc_storage[key] = image_data
+        key = (qr_id, session_id.strip())
+        image_storage[key] = base64_image
 
-        return {"status": "ok", "message": f"Imagen recibida y guardada para QR_ID {request.qr_id}"}
+        print(f"✅ Imagen recibida para: {key}")
+
+        return {"status": "ok", "message": f"Imagen guardada para QR_ID {qr_id}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error procesando la imagen: {str(e)}")
+
+# --- ENDPOINT PARA VERIFICAR SI LA IMAGEN FUE ENVIADA ---
 
 @app.get("/qr/verificar-imagen")
 def verificar_imagen(qr_id: int = Query(...), session_id: str = Query(...)):
     try:
-        key = (qr_id, session_id)
-        image_data = cdc_storage.get(key)
-        if image_data:
-            # Devolver la imagen en base64 (o el formato que necesites)
-            image = Image.frombytes(image_data)
-            buffer = BytesIO()
-            image.save(buffer, format="PNG")
-            return {"image": base64.b64encode(buffer.getvalue()).decode()}
-        else:
-            return {"image": None}
+        key = (qr_id, session_id.strip())
+        base64_image = image_storage.get(key)
+        if base64_image:
+            return {"image": base64_image}
+        return {"image": None}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error verificando la imagen: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error verificando imagen: {str(e)}")
