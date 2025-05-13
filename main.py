@@ -1,26 +1,25 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from typing import List
 from pydantic import BaseModel
 import qrcode
 from io import BytesIO
 import base64
 import random
-import os
 
 app = FastAPI()
-storage = {}  # {(qr_id, session_id): filename}
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Almacenamiento en memoria
+foto_storage = {}  # (qr_id, session_id): [imagenes]
+qr_urls = {}       # qr_id: url generada
+
+# ✅ MODELO DE ENTRADA PARA GENERAR QR
 class QRRequest(BaseModel):
     session_id: str
 
@@ -28,48 +27,50 @@ class QRRequest(BaseModel):
 def generar_qr(request: QRRequest):
     try:
         qr_id = random.randint(100000, 999999)
-        qr_data = f"https://adrieldt911.github.io/FotoWeb/?qr_id={qr_id}&session_id={request.session_id}"
-        qr = qrcode.make(qr_data)
+        url = f"https://adrieldt911.github.io/FotoWeb/?qr_id={qr_id}&session_id={request.session_id}"
+
+        # Generar imagen del QR
+        qr = qrcode.make(url)
         buffer = BytesIO()
         qr.save(buffer, format="PNG")
         qr_bytes = buffer.getvalue()
 
+        qr_urls[qr_id] = url
+
         return {
             "qr": base64.b64encode(qr_bytes).decode(),
-            "url": qr_data,
+            "url": url,
             "qr_id": qr_id
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error generando QR: {str(e)}")
 
-@app.post("/qr/guardar-foto")
-def guardar_foto(
-    qr_id: int = Form(...),
+# ✅ GUARDAR FOTOS MULTIPLES
+@app.post("/qr/guardar-fotos")
+async def guardar_fotos(
+    qr_id: str = Form(...),
     session_id: str = Form(...),
-    imagen: UploadFile = File(...)
+    imagenes: List[UploadFile] = File(...)
 ):
-    try:
-        filename = f"{qr_id}_{session_id}.jpg"
-        filepath = os.path.join(UPLOAD_DIR, filename)
-        with open(filepath, "wb") as f:
-            f.write(imagen.file.read())
-
-        key = (qr_id, session_id)
-        storage[key] = filename
-        return {"status": "ok", "filename": filename}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/qr/verificar-foto")
-def verificar_foto(qr_id: int = Query(...), session_id: str = Query(...)):
     key = (qr_id, session_id)
-    if key in storage:
-        return {"imagen_url": f"https://foto-api-production.up.railway.app/qr/imagen/{storage[key]}"}
-    return {"imagen_url": None}
+    if key not in foto_storage:
+        foto_storage[key] = []
 
-@app.get("/qr/imagen/{filename}")
-def get_image(filename: str):
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Imagen no encontrada")
-    return FileResponse(filepath, media_type="image/jpeg")
+    for image in imagenes:
+        contents = await image.read()
+        foto_storage[key].append(contents)
+
+    return {
+        "status": "ok",
+        "message": f"{len(imagenes)} imagen(es) recibida(s) para QR_ID {qr_id}."
+    }
+
+# ✅ VERIFICAR CANTIDAD DE FOTOS SUBIDAS (para polling)
+@app.get("/qr/verificar-fotos")
+def verificar_fotos(qr_id: str = Query(...), session_id: str = Query(...)):
+    key = (qr_id, session_id)
+    imagenes = foto_storage.get(key, [])
+    return {
+        "count": len(imagenes),
+        "success": len(imagenes) > 0
+    }
